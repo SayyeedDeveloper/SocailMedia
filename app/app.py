@@ -1,13 +1,14 @@
+import uuid
 from fastapi import FastAPI, HTTPException, File, Form, Depends, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.db import Post, create_db_and_tables, get_async_session
-from app.schemas import CreatePost
 from contextlib import asynccontextmanager
 import os
 
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+ALLOWED_TYPES = {"image/jpeg", "image/png"}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -45,7 +46,12 @@ async def upload_file(
         caption: str = Form(""),
         session: AsyncSession = Depends(get_async_session)
 ):
-    file_path = os.path.join(UPLOAD_DIR, file.filename)
+    if file.content_type not in ALLOWED_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid file type")
+
+    ext = os.path.splitext(file.filename)[1]
+    unique_name = f"{uuid.uuid4()}{ext}"
+    file_path = os.path.join(UPLOAD_DIR, unique_name)
 
     # Save file to disk
     with open(file_path, "wb") as buffer:
@@ -54,8 +60,8 @@ async def upload_file(
 
     post = Post(
         caption=caption,
-        file_name=file.filename,
-        url=f"/files/{file.filename}",
+        file_name=unique_name,
+        url=f"/files/{unique_name}",
         file_type=file.content_type,
         origin_name=file.filename
     )
@@ -65,3 +71,24 @@ async def upload_file(
     await session.refresh(post)
 
     return post
+
+
+@app.delete("/post/{id}")
+async def delete(
+        id: str,
+        session: AsyncSession = Depends(get_async_session)
+):
+    post = await session.get(Post, id)
+
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+
+    file_path = os.path.join(UPLOAD_DIR, post.file_name)
+
+    if os.path.exists(file_path):
+        os.remove(file_path)
+
+    await session.delete(post)
+    await session.commit()
+
+    return {"message": "Post deleted"}
